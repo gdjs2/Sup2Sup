@@ -2,7 +2,7 @@
 
 **Crop PGS subtitle canvases, find clipped cues, and move them into the picture.**
 
-Cropping a movie's black bars leaves its bitmap subtitles on the old canvas. Sup2Sup adjusts an extracted `.sup` track to match the retained picture, with a desktop preview for reviewing individual cues and a CLI for batch work.
+Cropping a movie's black bars leaves its bitmap subtitles on the old canvas. Sup2Sup adjusts PGS tracks imported from a video container or external `.sup` files to match the retained picture, with a desktop preview for reviewing individual cues and a CLI for batch work.
 
 For example, a `1920 × 1080` subtitle canvas can become `1920 × 804`. A 1080p PGS track can also be mapped onto cropped 4K video at 2× scale.
 
@@ -13,7 +13,9 @@ For example, a `1920 × 1080` subtitle canvas can become `1920 × 804`. A 1080p 
 - Drag, nudge, or move multiple cues together, with undo/redo.
 - Preview against video with audio, track/output selection, click-to-seek, and an original-canvas comparison.
 - Load, check, and fix cues in background tasks with progress and cancellation.
-- Save editable projects and export a SUP with a preservation report.
+- Save projects with optional video and multiple subtitle tracks; switch tracks during playback.
+- Import all PGS tracks from a video using PyAV, apply a shared crop, and fit/export all tracks.
+- Export an individual SUP with a preservation report, or all tracks to a directory.
 
 The exporter changes **presentation and window geometry (PCS/WDS)**. It preserves bitmap packets (ODS), palettes (PDS), packet order, timestamps, and forced flags. An unchanged round trip produces identical bytes. Export checks the result and refuses unresolved placements that would lose subtitle pixels.
 
@@ -34,20 +36,23 @@ To open a subtitle file directly:
 uv run --locked --extra gui sup2sup gui "movie.sup"
 ```
 
-The GUI uses PySide6 and Qt Multimedia for video and audio. The core library and CLI have no third-party runtime dependencies. A separate FFmpeg executable is optional: it is used for subtitle extraction and some integration tests, and is not required for the desktop player.
+The GUI uses PySide6 and Qt Multimedia for video and audio. Container import uses the [PyAV Python library](https://pyav.org/docs/stable/overview/installation.html), installed automatically with Sup2Sup. The application does not invoke or require `ffmpeg` or `ffprobe` executables. PyAV wheels bundle the media libraries on supported platforms. A separate FFmpeg executable is used only by the optional independent decoder/audio integration tests.
 
 ## Desktop workflow
 
-1. **Open SUP** to load an extracted PGS track. Video is optional.
-2. Set crop margins in **subtitle pixels**, then **Apply crop**. To turn `1920 × 1080` into `1920 × 804`, use left/top/right/bottom `0 / 138 / 0 / 138`. Alternatively, enter the target SUP size and choose **Center crop to this size**.
-3. Use **Problems only** and **Next problem** to review affected cues. Choose **Fit all problem cues** to correct them automatically. A safe margin of `0` gives minimum movement; `20` leaves 20 subtitle pixels of space.
-4. Select cues to nudge or set offsets, or drag a cue in **Cropped / edited** preview. Switch to **Original + crop mask** to compare its original position. Undo/redo is available from the toolbar.
-5. **Open video** to review the result during playback. If the video and subtitle crop need alignment, the video remains visible with the overlay hidden; click **Set subtitle alignment…** to confirm the crop.
-6. **Save project** to keep crop settings and per-cue offsets. **Export SUP** writes the adjusted track to a separate file after validation. The export dialog can also save a JSON preservation report.
+1. The GUI starts with an empty project. Use **New project** to start another, or **Open project** to resume a saved `.sup2sup.json` file.
+2. Optionally **Import video + PGS tracks**. One video is attached for playback and every embedded PGS subtitle track is imported. Non-PGS tracks (such as SRT, ASS, or VobSub) are skipped with a count. Reimporting the same video avoids duplicating its existing PGS tracks. Replacing/removing the video keeps imported subtitle tracks and edits.
+3. **Import SUP files** adds one or more external tracks to the current project. Choose the active track with the **Subtitle track** selector; switching preserves video playback and position. Each track has its own crop, offsets, and undo/redo history.
+4. Set margins in **subtitle pixels**, then choose **Apply crop to this track** or **Apply crop to all tracks**. The latter sets a shared project preset, converts margins exactly for each track's resolution, and applies to subsequent imports. Alternatively, use the centered output-size controls for the active track.
+5. With video loaded, **Detect project crop…** suggests a centered crop against a standard canvas, including 1920 × 1080 and 3840 × 2160. This is optional and works before importing subtitles. Review the original size and margins before applying. Detection uses video dimensions, not black-bar analysis of decoded frames; a full-size letterboxed video still needs manual margins. **Match video crop…** adjusts only the active track.
+6. Review **Problems only**, drag/nudge cues, or use **Fit problems in this track** / **Fit problems in all tracks**. A safe margin of `0` minimizes movement; `20` leaves 20 native subtitle pixels of space. Undo/redo operates on the active track, including its portion of a batch edit.
+7. **Save project** keeps the video reference, track list, active track, shared crop preset, and every track's edits. **Export all tracks…** writes all tracks to a chosen directory. Every track must pass geometry validation first; unresolved cues block the batch. Existing output files are refused in the GUI; choose another directory. **Export SUP** remains available for the active track with an optional preservation report.
 
-Projects verify the source SUP using a hash. Video selection, audio settings, preview delay, and playback position are temporary preview settings. Positive preview delay displays subtitles later without changing exported timestamps.
+A new project may be an empty draft; exporting requires at least one subtitle track. External SUP sources are referenced by relative paths and verified using hashes. Extracted PGS data is embedded in the project file, so temporary extraction files and the original container are not needed to reopen those subtitles. Embedded data increases project-file size. Missing video does not prevent subtitle editing; import a replacement to restore playback. Old single-track projects still open and save in the new format.
 
-Loading and batch edits show progress and can be cancelled without applying partial edits. Export runs in the background and cannot be cancelled during writing. The movie itself is never cropped or rewritten.
+Audio settings, preview delay, video mapping mode, and playback position remain temporary preview settings. Positive preview delay displays subtitles later without changing exported timestamps. Container extraction normalizes timestamps to the container's playback origin, retaining a late first cue's offset; container formats may not retain the source SUP's original decode timestamps. Subsequent editing/export preserves the imported SUP's timestamps and encoded bitmap/palette data.
+
+Loading and batch edits run in the background and can be cancelled without applying partial changes. Export stages and validates every track before publishing any output. Output filenames derive from track names, with numeric suffixes for duplicates. A filesystem failure during publication can leave an incomplete batch; completed files remain available. The movie itself is never cropped or rewritten.
 
 ### Playback controls
 
@@ -116,15 +121,25 @@ uv run --no-sync sup2sup crop movie.sup movie.cropped.sup --video-source 3840 21
 
 Cue numbers start at **1** in the CLI/UI. Repeated `--move CUE DX DY` options accumulate after automatic fitting. The default `--fit warn` leaves placements unchanged and refuses export when the crop would lose an object. Existing outputs require `--overwrite`; the input SUP is protected.
 
-### Extracting a track
+### Multi-track projects
 
-Sup2Sup edits external `.sup` files. Extraction and remuxing are separate steps. If FFmpeg is installed, copy a known PGS track from a container with:
+Create a project from a video's PGS tracks and/or external files:
 
 ```sh
-ffmpeg -i movie.mkv -map 0:s:0 -c:s copy movie.sup
+uv run --no-sync sup2sup project-create movie.sup2sup.json --video movie.mkv --subtitle commentary.sup
+uv run --no-sync sup2sup project-create subtitles.sup2sup.json --subtitle english.sup --subtitle japanese.sup --crop 0 138 0 138 --fit --margin 20
 ```
 
-Choose the appropriate subtitle stream index for your file; the selected stream must be PGS.
+`--crop` uses the first subtitle's canvas unless `--canvas WIDTH HEIGHT` is supplied. It is converted exactly to each track's native resolution. `--detect-crop` with `--video` instead uses the same optional centered video-dimension suggestion as the GUI; `--canvas` can override the inferred original dimensions. These two crop options are mutually exclusive. No crop is applied by default.
+
+Inspect every track, then export all saved edits (optionally fitting remaining problems):
+
+```sh
+uv run --no-sync sup2sup project-inspect movie.sup2sup.json
+uv run --no-sync sup2sup project-export movie.sup2sup.json ./finished --fit --margin 20
+```
+
+These commands produce JSON summaries/reports. `project-export --fit` affects the exported files without changing the saved project. `--overwrite` explicitly permits replacing existing output files; source media and project files remain protected. Existing `inspect` and `crop` commands remain available, and `--project` can select an external source that appears exactly once in a multi-track project.
 
 ## Limitations
 
@@ -163,7 +178,7 @@ uv run --locked --extra gui --group dev ruff check src tests
 
 ### Sharing files and bug reports
 
-Use small synthetic examples when reporting issues. Saved `.sup2sup.json` projects include a source path and hash; logs and screenshots may reveal local paths or media titles. Review those details before sharing. Keep local captures and diagnostics under `.test-artifacts/`, which is ignored along with media files, generated projects/reports, caches, and local credentials.
+Use small synthetic examples when reporting issues. Saved `.sup2sup.json` projects include source paths, hashes, and embedded subtitle data; logs and screenshots may reveal local paths or media titles. Review those details before sharing. Keep local captures and diagnostics under `.test-artifacts/`, which is ignored along with media files, generated projects/reports, caches, and local credentials.
 
 Implementation references: [FFmpeg's PGS decoder](https://github.com/FFmpeg/FFmpeg/blob/master/libavcodec/pgssubdec.c), [Qt QGraphicsVideoItem](https://doc.qt.io/qtforpython-6/PySide6/QtMultimediaWidgets/QGraphicsVideoItem.html), and [Qt QMediaPlayer](https://doc.qt.io/qtforpython-6/PySide6/QtMultimedia/QMediaPlayer.html).
 

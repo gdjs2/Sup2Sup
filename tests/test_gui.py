@@ -2,11 +2,11 @@
 
 import importlib.util
 import os
-from pathlib import Path
 import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 QT_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -31,7 +31,7 @@ class GUISmokeTests(unittest.TestCase):
         if self.window.task:
             self.window._cancel_task()
             self.wait_until(lambda: self.window.task is None)
-        self.window.session = None
+        self.window._confirm_discard = lambda: True
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
@@ -80,6 +80,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_loading_progress_and_model_do_not_build_every_cell(self):
         from PySide6.QtCore import QTimer
+
         from sup2sup.gui.cue_table import CueTableModel
         from tests.fixtures import many_cues
 
@@ -108,6 +109,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_checking_runs_off_gui_thread_and_remains_cancellable(self):
         from PySide6.QtCore import QTimer
+
         from sup2sup.edit.geometry import inspect_cue
 
         self.load(30)
@@ -223,6 +225,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_preview_native_palette_matches_core_renderer(self):
         from PySide6.QtGui import QImage
+
         from sup2sup.pgs.parser import parse_sup
         from sup2sup.pgs.renderer import render_tiles
         from tests.fixtures import simple
@@ -247,6 +250,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_video_crop_dialog_suggests_4k_and_checks_custom_margins(self):
         from PySide6.QtWidgets import QDialog, QDialogButtonBox
+
         from sup2sup.edit.geometry import Crop
         from sup2sup.gui.video_crop import VideoCropDialog
 
@@ -269,6 +273,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_match_video_crop_checks_cues_and_supports_undo(self):
         from PySide6.QtWidgets import QDialog
+
         from sup2sup.edit.geometry import Crop
         from sup2sup.gui.video_crop import VideoCropDialog
 
@@ -297,6 +302,7 @@ class GUISmokeTests(unittest.TestCase):
 
     def test_cancel_video_crop_keeps_session_and_mapping(self):
         from PySide6.QtWidgets import QDialog
+
         from sup2sup.edit.geometry import inspect_cue
         from sup2sup.gui.video_crop import VideoCropDialog
 
@@ -407,3 +413,71 @@ class GUISmokeTests(unittest.TestCase):
                              pos=QPoint(slider.width() * 3 // 4, slider.height() // 2))
             seek.assert_called_once_with(slider.value())
             self.assertAlmostEqual(slider.value(), 75_000, delta=2000)
+
+    def test_switch_tracks_preserves_playback_and_independent_edits(self):
+        self.load(2)
+        self.crop()
+        self.load(1)
+        first = self.window.project.tracks[0].session
+        self.assertEqual(len(self.window.project.tracks), 2)
+        self.assertEqual(self.window.project.active_index, 1)
+        self.assertEqual(self.window.session.crop.top, 0)
+        self.video_frame()
+        with patch.object(self.window.player, 'pause') as pause, \
+                patch.object(self.window.player, 'setSource') as source, \
+                patch.object(self.window.player, 'setPosition') as seek:
+            self.window.track_selector.setCurrentIndex(0)
+            self.assertIs(self.window.session, first)
+            self.assertEqual(self.window.session.crop.top, 138)
+            self.assertEqual(len(self.window.timeline.cues), 2)
+            pause.assert_not_called()
+            source.assert_not_called()
+            seek.assert_not_called()
+
+    def test_project_crop_fit_save_reopen_and_export(self):
+        from PySide6.QtWidgets import QFileDialog
+
+        from sup2sup.edit.project import Project
+        self.load()
+        self.load()
+        self.window.crop_spins[1].setValue(138)
+        self.window.crop_spins[3].setValue(138)
+        self.window._apply_project_crop()
+        self.idle()
+        self.window._fit_all_tracks()
+        self.idle()
+        self.assertTrue(all(t.session.transforms for t in self.window.project.tracks))
+        path = Path(self.directory.name) / 'project.json'
+        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(path), '')):
+            self.assertTrue(self.window._save_project())
+        self.assertFalse(self.window.project.dirty)
+        self.window._new_project()
+        self.assertEqual(self.window.project.tracks, [])
+        self.assertIsNone(self.window.session)
+        self.window.open_path(path)
+        self.idle()
+        self.assertEqual(len(self.window.project.tracks), 2)
+        self.assertTrue(self.window.session.transforms)
+        self.assertEqual(len(Project.load(path).export_all(Path(self.directory.name) / 'out')), 2)
+
+    def test_detect_project_crop_before_subtitle_import(self):
+        from PySide6.QtWidgets import QDialog
+
+        from sup2sup.gui.video_crop import VideoCropDialog
+        self.video_frame(1920, 804)
+        with patch.object(VideoCropDialog, 'exec', return_value=QDialog.DialogCode.Accepted):
+            self.window._detect_project_crop()
+        self.idle()
+        self.assertEqual(self.window.project.crop.top, 138)
+        self.load()
+        self.assertEqual(self.window.session.crop.top, 138)
+
+    def test_cancel_batch_import_keeps_all_tracks(self):
+        from sup2sup.progress import OperationCancelled
+        self.load()
+        before = self.window.project
+        with patch('sup2sup.edit.project.Project.add_sup', side_effect=OperationCancelled()):
+            self.window._import_subtitles(['cancel.sup'])
+            self.idle()
+        self.assertIs(self.window.project, before)
+        self.assertEqual(len(self.window.project.tracks), 1)

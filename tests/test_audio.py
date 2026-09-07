@@ -32,6 +32,7 @@ class AudioTests(unittest.TestCase):
         from PySide6.QtCore import QUrl
         self.window.player.stop()
         self.window.player.setSource(QUrl())
+        self.window._confirm_discard = lambda: True
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()

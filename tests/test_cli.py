@@ -105,3 +105,30 @@ class VideoMappingTests(unittest.TestCase):
         with self.assertRaises(EditError):
             video_rectangle(1920, 1080, crop, 1280, 600)
         self.assertEqual(video_rectangle(1920, 1080, crop, 1280, 600, "cropped"), Rect(0, 138, 1920, 804))
+
+
+class ProjectCLITests(unittest.TestCase):
+    setUp = CLITests.setUp
+    invoke = CLITests.invoke
+
+    def test_create_inspect_export_multiple_tracks(self):
+        project = Path(self.temp.name) / 'movie.json'
+        directory = Path(self.temp.name) / 'exports'
+        result, output, error = self.invoke(
+            'project-create', project, '--subtitle', self.source, '--subtitle', self.source,
+            '--crop', 0, 138, 0, 138, '--fit', '--margin', 20)
+        self.assertEqual(result, 0, error)
+        self.assertEqual(len(json.loads(output)['tracks']), 2)
+        result, output, error = self.invoke('project-inspect', project)
+        self.assertEqual(result, 0, error)
+        self.assertEqual([t['problems'] for t in json.loads(output)['tracks']], [0, 0])
+        result, output, error = self.invoke('project-export', project, directory)
+        self.assertEqual(result, 0, error)
+        self.assertEqual(len(json.loads(output)), 2)
+        self.assertEqual(len(list(directory.glob('*.sup'))), 2)
+
+    def test_detect_crop_requires_video(self):
+        result, _, error = self.invoke('project-create', self.output, '--detect-crop')
+        self.assertEqual(result, 1)
+        self.assertIn('requires --video', error)
+        self.assertFalse(self.output.exists())
