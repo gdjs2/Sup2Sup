@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sup2sup"
+version = "0.1.0"
+description = "Lossless PGS subtitle canvas crop and cue placement editor"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11,<3.15"
+dependencies = []
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.10,<7"]
+
+[dependency-groups]
+dev = ["ruff>=0.12,<1"]
+
+[project.scripts]
+sup2sup = "sup2sup.cli:main"
+sup2sup-gui = "sup2sup.gui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sup2sup"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.uv]
+default-groups = []
