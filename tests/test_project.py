@@ -164,3 +164,50 @@ class ProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(EditError, "whole pixels"):
             self.project.set_crop((3840, 2160), Crop(top=277, bottom=277))
         self.assertEqual(self.project._snapshot(), before)
+
+    def test_zero_shared_crop_accepts_different_subtitle_aspects(self):
+        from sup2sup.pgs.writer import export_sup
+
+        document = parse_sup(simple())
+        session = Session(document, self.source)
+        session.set_crop(Crop(top=138, bottom=138))
+        session.auto_fit([0])
+        cropped, _ = export_sup(document, session.crop, session.transforms)
+        source = self.root / "cropped.sup"
+        source.write_bytes(cropped)
+        self.project.set_crop((1920, 1080), Crop())
+        self.project.add_sup(source)
+        self.project.set_crop((1920, 804), Crop())
+        self.assertEqual([t.session.crop for t in self.project.tracks], [Crop(), Crop()])
+
+    def test_export_subset_ignores_unselected_problems_and_keeps_stable_names(self):
+        self.project.add_sup(self.source)
+        self.project.set_crop((1920, 1080), Crop(top=138, bottom=138))
+        self.project.tracks[1].session.auto_fit([0])
+        before = self.project._snapshot()
+        output = self.root / "selected"
+        reports = self.project.export_tracks(output, [1])
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(Path(reports[0]["output"]).name, "english.2.cropped.sup")
+        self.assertEqual(len(list(output.iterdir())), 1)
+        self.assertEqual(self.project._snapshot(), before)
+        self.project.tracks[0].session.auto_fit([0])
+        self.project.export_tracks(output, [0])
+        self.assertEqual(
+            {p.name for p in output.iterdir()}, {"english.cropped.sup", "english.2.cropped.sup"}
+        )
+
+    def test_selected_export_protects_unselected_sources(self):
+        protected = self.root / "english.cropped.sup"
+        protected.write_bytes(simple())
+        self.project.add_sup(protected)
+        with self.assertRaises(EditError):
+            self.project.export_tracks(self.root, [0], overwrite=True)
+        self.assertEqual(protected.read_bytes(), simple())
+
+    def test_export_selection_must_be_nonempty_and_valid(self):
+        output = self.root / "invalid"
+        for indices in ([], [-1], [1], [True], ["0"]):
+            with self.subTest(indices=indices), self.assertRaises(EditError):
+                self.project.export_tracks(output, indices)
+        self.assertFalse(output.exists())

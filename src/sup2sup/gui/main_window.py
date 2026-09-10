@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableView,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -34,12 +36,15 @@ from sup2sup.edit.geometry import Crop, EditError, Transform
 from sup2sup.edit.project import Project
 from sup2sup.edit.timeline import Timeline, format_pts
 from sup2sup.files import same_path, write_bytes
+from sup2sup.media import probe_video
 from sup2sup.pgs.writer import export_sup
-from sup2sup.progress import Progress
-from sup2sup.video import suggest_video_canvas, video_rectangle
+from sup2sup.progress import Progress, track_progress
+from sup2sup.video import subtitle_crop_from_video, suggest_video_canvas, video_rectangle
 
 from .audio_controls import AudioControls
 from .cue_table import CueTableModel
+from .export_tracks import ExportTracksDialog
+from .import_tracks import ImportTracksDialog
 from .preview import Preview
 from .seek_slider import SeekSlider
 from .tasks import Task
@@ -77,7 +82,7 @@ class MainWindow(QMainWindow):
         self.player.durationChanged.connect(self._duration_changed)
         self.player.playbackStateChanged.connect(self._playback_changed)
         self.player.mediaStatusChanged.connect(self._media_status)
-        self.player.tracksChanged.connect(lambda: self.player.setActiveSubtitleTrack(-1))
+        self.player.tracksChanged.connect(self._select_media_tracks)
         self.player.errorOccurred.connect(lambda _error, message: self._error(f"Video: {message}"))
         self.preview.video_item.nativeSizeChanged.connect(self._map_video)
         self.preview.cueMoved.connect(self._dragged)
@@ -104,48 +109,47 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         self.new_action = self._action("New project", self._new_project, "Ctrl+N")
-        self.export_all_action = self._action(
-            "Export all tracks…", self._export_all, "Ctrl+Shift+E"
+        self.export_tracks_action = self._action(
+            "Choose subtitle tracks…", self._export_tracks, "Ctrl+E"
         )
         self.open_sup_action = self._action(
-            "Import SUP files", self._open_sup, QKeySequence.StandardKey.Open
+            "SUP subtitle files…", self._open_sup, QKeySequence.StandardKey.Open
         )
         self.open_project_action = self._action("Open project", self._open_project)
-        self.open_video_action = self._action("Import video + PGS tracks", self._open_video)
+        self.open_video_action = self._action("Video container…", self._open_video)
         self.save_action = self._action(
             "Save project", self._save_project, QKeySequence.StandardKey.Save
         )
-        self.export_action = self._action("Export SUP", self._export, "Ctrl+E")
+        self.export_action = self._action("Active track to file…", self._export, "Ctrl+Shift+E")
         self.undo_action = self._action("Undo", self._undo, QKeySequence.StandardKey.Undo)
         self.redo_action = self._action("Redo", self._redo, QKeySequence.StandardKey.Redo)
-        for action in (
-            self.new_action,
-            self.open_sup_action,
-            self.open_project_action,
-            self.open_video_action,
-            self.save_action,
-            self.export_all_action,
-            self.export_action,
-            self.undo_action,
-            self.redo_action,
-        ):
-            toolbar.addAction(action)
+        toolbar.addAction(self.new_action)
+        self.import_menu = QMenu(self)
+        self.import_menu.addAction(self.open_video_action)
+        self.import_menu.addAction(self.open_sup_action)
+        self.import_button = QToolButton(self)
+        self.import_button.setText("Import…")
+        self.import_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.import_button.setMenu(self.import_menu)
+        toolbar.addWidget(self.import_button)
+        toolbar.addAction(self.open_project_action)
+        toolbar.addAction(self.save_action)
+        self.export_menu = QMenu(self)
+        self.export_menu.addAction(self.export_tracks_action)
+        self.export_menu.addAction(self.export_action)
+        self.export_button = QToolButton(self)
+        self.export_button.setText("Export…")
+        self.export_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.export_button.setMenu(self.export_menu)
+        toolbar.addWidget(self.export_button)
+        toolbar.addAction(self.undo_action)
+        toolbar.addAction(self.redo_action)
 
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
         self.file_label = QLabel("No subtitle loaded")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        track_controls = QHBoxLayout()
-        track_controls.addWidget(QLabel("Subtitle track"))
-        self.track_selector = QComboBox()
-        self.track_selector.currentIndexChanged.connect(self._switch_track)
-        track_controls.addWidget(self.track_selector, 1)
-        self.remove_track_button = self._button("Remove track", self._remove_track)
-        track_controls.addWidget(self.remove_track_button)
-        self.remove_video_button = self._button("Remove video", self._remove_video)
-        track_controls.addWidget(self.remove_video_button)
-        outer.addLayout(track_controls)
         outer.addWidget(self.file_label)
         self.progress_panel = QWidget()
         progress_layout = QHBoxLayout(self.progress_panel)
@@ -206,6 +210,16 @@ class MainWindow(QMainWindow):
         bottom_layout.setContentsMargins(0, 0, 0, 0)
         self.vertical_splitter.addWidget(bottom)
         self.vertical_splitter.setSizes([500, 250])
+        track_controls = QHBoxLayout()
+        track_controls.addWidget(QLabel("Subtitle track"))
+        self.track_selector = QComboBox()
+        self.track_selector.currentIndexChanged.connect(self._switch_track)
+        track_controls.addWidget(self.track_selector, 1)
+        self.remove_track_button = self._button("Remove track", self._remove_track)
+        track_controls.addWidget(self.remove_track_button)
+        self.remove_video_button = self._button("Remove video", self._remove_video)
+        track_controls.addWidget(self.remove_video_button)
+        bottom_layout.addLayout(track_controls)
         self.video_label = QLabel("Video optional — cue previews also work on a black canvas.")
         self.video_label.setWordWrap(True)
         bottom_layout.addWidget(self.video_label)
@@ -255,8 +269,7 @@ class MainWindow(QMainWindow):
             spin.setRange(0, 65534)
             self.crop_spins.append(spin)
             crop_form.addRow(name, spin)
-        crop_form.addRow(self._button("Apply crop to this track", self._apply_crop))
-        crop_form.addRow(self._button("Apply crop to all tracks", self._apply_project_crop))
+        crop_form.addRow(self._button("Apply project crop", self._apply_crop))
         self.output_label = QLabel()
         crop_form.addRow(self.output_label)
         side.addWidget(crop_box)
@@ -340,8 +353,9 @@ class MainWindow(QMainWindow):
         self.remove_track_button.setEnabled(enabled and not self.task)
         self.remove_video_button.setEnabled(self.video_path is not None and not self.task)
         self.detect_crop_button.setEnabled(self._video_dimensions() is not None and not self.task)
+        self.export_button.setEnabled(enabled and not self.task)
         for action in (
-            self.export_all_action,
+            self.export_tracks_action,
             self.export_action,
             self.undo_action,
             self.redo_action,
@@ -391,8 +405,14 @@ class MainWindow(QMainWindow):
         else:
             self.progress_bar.setRange(0, 0)
             count = ""
+        track = (
+            f"({update.track_number}/{update.track_total}) {update.track_name} · "
+            if update.track_total
+            else ""
+        )
         self.progress_label.setText(
-            f"{update.stage}: {count}".rstrip(": ")
+            track
+            + f"{update.stage}: {count}".rstrip(": ")
             + (f" — {update.detail}" if update.detail else "")
         )
 
@@ -419,10 +439,12 @@ class MainWindow(QMainWindow):
                 self.progress_bar.setValue(0)
                 self.progress_label.setText("Cancelled — previous document and edits kept.")
                 self._show_crop()
+                self._update_tracks()
             elif task.error is not None:
                 self.progress_bar.setValue(0)
                 self.progress_label.setText("Operation failed — previous document and edits kept.")
                 self._show_crop()
+                self._update_tracks()
                 self._error(task.error)
             else:
                 self.progress_bar.setValue(1000)
@@ -507,8 +529,9 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _scan_tracks(project, progress):
         results = {}
-        for track in project.tracks:
-            findings = track.session.findings(progress=progress)
+        for number, track in enumerate(project.tracks, 1):
+            reporter = track_progress(progress, number, len(project.tracks), track.name)
+            findings = track.session.findings(progress=reporter)
             results[id(track.session)] = (
                 findings,
                 tuple(f.cue_index for f in findings if f.problem),
@@ -519,8 +542,9 @@ class MainWindow(QMainWindow):
         def work(progress):
             candidate = self.project.fork()
             first = len(candidate.tracks)
-            for path in paths:
-                candidate.add_sup(path, progress=progress)
+            for number, path in enumerate(paths, 1):
+                reporter = track_progress(progress, number, len(paths), Path(path).name)
+                candidate.add_sup(path, progress=reporter)
             candidate.active_index = first
             return candidate, self._scan_tracks(candidate, progress)
 
@@ -587,6 +611,36 @@ class MainWindow(QMainWindow):
     def _switch_track(self, index):
         if self.task or not 0 <= index < len(self.project.tracks):
             return
+        if self.session is not None:
+            source = self.session.document
+            target = self.project.tracks[index].session
+            try:
+                crop = (
+                    subtitle_crop_from_video(
+                        target.document.width,
+                        target.document.height,
+                        source.width,
+                        source.height,
+                        self.session.crop,
+                    )
+                    if self.session.crop != Crop()
+                    else Crop()
+                )
+            except EditError as exc:
+                self._update_tracks()
+                self._error(str(exc))
+                return
+            if target.crop != crop:
+                # Older projects can contain different crops per track. Keep the visible crop
+                # when switching, without pausing or seeking the shared video playback.
+                def work(progress):
+                    candidate = self.project.fork()
+                    candidate.set_crop((source.width, source.height), self.session.crop)
+                    candidate.active_index = index
+                    return candidate, self._scan_tracks(candidate, progress)
+
+                self._run_task("Keeping project crop…", work, self._project_edited, pause=False)
+                return
         self.project.active_index = index
         self._activate_track()
 
@@ -611,22 +665,55 @@ class MainWindow(QMainWindow):
             self._import_video(path)
 
     def _import_video(self, path):
+        def probed(info):
+            dialog = ImportTracksDialog(path, info, self)
+            accepted = dialog.exec() == QDialog.DialogCode.Accepted
+            video_index = dialog.video_stream_index
+            subtitle_indices = dialog.subtitle_indices
+            dialog.deleteLater()
+            if accepted:
+                self._import_container_selection(path, info, video_index, subtitle_indices)
+
+        self._run_task(
+            "Reading container tracks…",
+            lambda progress: probe_video(path, progress=progress),
+            probed,
+        )
+
+    def _import_container_selection(self, path, info, video_index, subtitle_indices):
         def work(progress):
             candidate = self.project.fork()
-            info = candidate.import_video(path, progress=progress)
-            return candidate, self._scan_tracks(candidate, progress), info.skipped_subtitles
+            candidate.import_video(
+                path,
+                info=info,
+                video_stream_index=video_index,
+                subtitle_indices=subtitle_indices,
+                progress=progress,
+            )
+            return candidate, self._scan_tracks(candidate, progress)
 
         def imported(result):
-            project, results, skipped = result
+            project, results = result
+            change_video = (
+                project.video != self.project.video
+                or project.video_track_index != self.project.video_track_index
+            )
             self.project = project
-            self._set_video(project.video)
+            if change_video:
+                self._set_video(project.video)
             self._project_edited((project, results))
             self.progress_label.setText(
-                f"Video imported · {len(project.tracks)} subtitle tracks in project. "
-                + (f"Skipped {skipped} non-PGS subtitle tracks." if skipped else "")
+                f"Import complete · {len(project.tracks)} subtitle tracks in project."
             )
 
-        self._run_task("Importing video and extracting PGS tracks…", work, imported)
+        self._run_task("Importing selected container tracks…", work, imported)
+
+    def _select_media_tracks(self):
+        self.player.setActiveSubtitleTrack(-1)
+        index = self.project.video_track_index
+        if self.video_path and 0 <= index < len(self.player.videoTracks()):
+            if self.player.activeVideoTrack() != index:
+                self.player.setActiveVideoTrack(index)
 
     def _set_video(self, path):
         self.video_path = Path(path) if path else None
@@ -649,6 +736,8 @@ class MainWindow(QMainWindow):
         if self.task:
             return
         self.project.video = None
+        self.project.video_stream_index = None
+        self.project.video_track_index = 0
         self._set_video(None)
         self._activate_track()
 
@@ -690,14 +779,19 @@ class MainWindow(QMainWindow):
 
         self._run_task("Fixing problem cues in all subtitle tracks…", work, self._project_edited)
 
-    def _export_all(self):
-        directory = QFileDialog.getExistingDirectory(self, "Export all subtitle tracks")
-        if not directory:
+    def _export_tracks(self):
+        if self.task or not self.project.tracks:
+            return
+        dialog = ExportTracksDialog(self.project, self)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        indices, directory = dialog.selected_indices, dialog.directory
+        dialog.deleteLater()
+        if not accepted:
             return
         project = self.project.fork()
 
         def work(progress):
-            return project.export_all(directory, progress=progress)
+            return project.export_tracks(directory, indices, progress=progress)
 
         def exported(reports):
             QMessageBox.information(
@@ -705,12 +799,15 @@ class MainWindow(QMainWindow):
             )
 
         self._run_task(
-            "Validating and exporting all subtitle tracks…", work, exported, cancellable=False
+            "Validating and exporting selected subtitle tracks…",
+            work,
+            exported,
+            cancellable=False,
         )
 
     def _media_status(self, status):
         if status in (QMediaPlayer.MediaStatus.LoadedMedia, QMediaPlayer.MediaStatus.BufferedMedia):
-            self.player.setActiveSubtitleTrack(-1)
+            self._select_media_tracks()
             if self._pending_seek is not None:
                 position = self._pending_seek
                 self._pending_seek = None
@@ -826,7 +923,7 @@ class MainWindow(QMainWindow):
         return True
 
     def _export(self):
-        if not self.session:
+        if self.task or not self.session:
             return
         path, _ = QFileDialog.getSaveFileName(
             self,
@@ -897,6 +994,8 @@ class MainWindow(QMainWindow):
         ):
             spin.setValue(value)
         region = crop.rectangle(self.session.document.width, self.session.document.height)
+        self.target_width.setValue(region.width)
+        self.target_height.setValue(region.height)
         self.output_label.setText(f"SUP output: {region.width} × {region.height}")
 
     def _present(self, session, findings, problems, *, selected=None):
@@ -950,17 +1049,29 @@ class MainWindow(QMainWindow):
         def work(progress):
             candidate = source.fork()
             errors = operation(candidate, progress) or []
-            findings = candidate.findings(progress=progress)
-            problems = tuple(f.cue_index for f in findings if f.problem)
+            crop_project = None
+            results = None
+            if candidate.crop != source.crop:
+                crop_project = self.project.fork()
+                crop_project.tracks[crop_project.active_index].session = candidate
+                doc = candidate.document
+                crop_project.set_crop((doc.width, doc.height), candidate.crop)
+                results = self._scan_tracks(crop_project, progress)
+                findings, problems = results[id(candidate)]
+            else:
+                findings = candidate.findings(progress=progress)
+                problems = tuple(f.cue_index for f in findings if f.problem)
             moved = sum(
                 candidate.transforms.get(cue.index, Transform())
                 != source.transforms.get(cue.index, Transform())
                 for cue in source.document.cues
             )
-            return candidate, findings, problems, errors, moved
+            return candidate, findings, problems, errors, moved, crop_project, results
 
         def finished(result):
-            candidate, findings, problems, errors, moved = result
+            candidate, findings, problems, errors, moved, crop_project, results = result
+            if crop_project is not None:
+                self.project, self._track_results = crop_project, results
             self._present(candidate, findings, problems)
             if on_applied is not None:
                 on_applied()

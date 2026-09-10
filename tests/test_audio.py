@@ -2,12 +2,12 @@
 
 import importlib.util
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 QT_AVAILABLE = importlib.util.find_spec("PySide6") is not None
@@ -66,8 +66,10 @@ class AudioTests(unittest.TestCase):
         from PySide6.QtMultimedia import QAudioDevice
         self.assertFalse(self.controls.tracks.isEnabled())
         self.assertIn("Open a video", self.controls.tracks.currentText())
-        with patch.object(self.controls.devices, "audioOutputs", return_value=[]), \
-                patch.object(self.controls.devices, "defaultAudioOutput", return_value=QAudioDevice()):
+        with (
+            patch.object(self.controls.devices, "audioOutputs", return_value=[]),
+            patch.object(self.controls.devices, "defaultAudioOutput", return_value=QAudioDevice()),
+        ):
             self.controls._refresh_outputs()
         self.assertFalse(self.controls.outputs.isEnabled())
         self.assertEqual(self.controls.outputs.currentText(), "No audio output device")
@@ -77,7 +79,8 @@ class AudioTests(unittest.TestCase):
         if not devices:
             self.skipTest("No audio output device available")
         device = devices[-1]
-        self.controls.outputs.setCurrentIndex(self.controls.outputs.findData(bytes(device.id()).hex()))
+        index = self.controls.outputs.findData(bytes(device.id()).hex())
+        self.controls.outputs.setCurrentIndex(index)
         self.assertEqual(self.window.audio.device().id(), device.id())
         self.controls._refresh_outputs()
         self.assertEqual(self.controls.outputs.currentData(), bytes(device.id()).hex())
@@ -110,12 +113,16 @@ class AudioTests(unittest.TestCase):
         buffers = []
         sink.audioBufferReceived.connect(lambda b: buffers.append(b) if b.isValid() else None)
         self.window.player.setAudioBufferOutput(sink)
-        with patch.object(QFileDialog, "getOpenFileName", return_value=(str(video), "")):
+        from PySide6.QtWidgets import QDialog
+
+        from sup2sup.gui.import_tracks import ImportTracksDialog
+        with patch.object(QFileDialog, "getOpenFileName", return_value=(str(video), "")), \
+                patch.object(ImportTracksDialog, "exec", return_value=QDialog.DialogCode.Accepted):
             self.window._open_video()
-        self.wait_until(lambda: len(self.window.player.audioTracks()) == 2
-                        and self.window.player.mediaStatus() in (
-                            QMediaPlayer.MediaStatus.LoadedMedia,
-                            QMediaPlayer.MediaStatus.BufferedMedia))
+            self.wait_until(lambda: len(self.window.player.audioTracks()) == 2
+                            and self.window.player.mediaStatus() in (
+                                QMediaPlayer.MediaStatus.LoadedMedia,
+                                QMediaPlayer.MediaStatus.BufferedMedia))
         self.assertEqual(self.controls.tracks.count(), 2)
         self.assertIn("Main dialogue", self.controls.tracks.itemText(0))
         self.assertIn("Commentary", self.controls.tracks.itemText(1))

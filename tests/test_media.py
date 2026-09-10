@@ -16,24 +16,27 @@ from sup2sup.progress import OperationCancelled
 from tests.fixtures import simple
 
 
-def make_container(path, *, size=(1920, 1080), tracks=2, staggered=False):
+def make_container(path, *, size=(1920, 1080), tracks=2, staggered=False, video_count=1):
     with av.open(io.BytesIO(simple()), format="sup") as source:
         with av.open(str(path), "w") as output:
-            video = output.add_stream("mpeg4", rate=1)
-            video.width, video.height = size
-            video.pix_fmt = "yuv420p"
+            videos = [output.add_stream("mpeg4", rate=1) for _ in range(video_count)]
+            for number, video in enumerate(videos):
+                video.width, video.height = size if number == 0 else (640, 360)
+                video.pix_fmt = "yuv420p"
+                video.metadata["title"] = f"Angle {number + 1}"
             subtitles = [output.add_stream_from_template(source.streams[0]) for _ in range(tracks)]
             for index, stream in enumerate(subtitles):
                 stream.metadata["language"] = ("eng", "jpn")[index % 2]
-            for index in range(5):
-                frame = av.VideoFrame(*size, "yuv420p")
-                for plane in frame.planes:
-                    plane.update(bytes(plane.buffer_size))
-                frame.pts = index
-                for packet in video.encode(frame):
+            for video in videos:
+                for index in range(5):
+                    frame = av.VideoFrame(video.width, video.height, "yuv420p")
+                    for plane in frame.planes:
+                        plane.update(bytes(plane.buffer_size))
+                    frame.pts = index
+                    for packet in video.encode(frame):
+                        output.mux(packet)
+                for packet in video.encode():
                     output.mux(packet)
-            for packet in video.encode():
-                output.mux(packet)
             for packet in source.demux():
                 if not packet.size:
                     continue
@@ -198,3 +201,53 @@ class MediaTests(unittest.TestCase):
         with patch("sup2sup.media.av.open") as opened:
             self.assertEqual(extract_pgs_tracks(self.path, []), {})
             opened.assert_not_called()
+
+    def test_selected_video_and_subtitle_tracks_persist(self):
+        make_container(self.path, video_count=2)
+        info = probe_video(self.path)
+        self.assertEqual([v["index"] for v in info.videos], [0, 1])
+        self.assertEqual(info.videos[1]["playback_index"], 1)
+        project = Project()
+        project.import_video(self.path, video_stream_index=1, subtitle_indices=[3])
+        self.assertEqual(project.video_stream_index, 1)
+        self.assertEqual(project.video_track_index, 1)
+        self.assertEqual([t.stream_index for t in project.tracks], [3])
+        path = Path(self.temp.name) / "project.json"
+        project.save(path)
+        loaded = Project.load(path)
+        self.assertEqual(loaded.video_stream_index, 1)
+        self.assertEqual(loaded.video_track_index, 1)
+        self.assertEqual(loaded.video, self.path)
+
+    def test_subtitles_only_preserves_video_and_video_only_skips_extraction(self):
+        project = Project()
+        original_video = Path(self.temp.name) / "other.mkv"
+        project.video = original_video
+        project.video_stream_index, project.video_track_index = 4, 1
+        project.import_video(self.path, video_stream_index=None, subtitle_indices=[2])
+        self.assertEqual(project.video, original_video)
+        self.assertEqual(project.video_stream_index, 4)
+        self.assertEqual([t.stream_index for t in project.tracks], [2])
+        with patch("sup2sup.edit.project.extract_pgs_tracks") as extract:
+            project.import_video(self.path, video_stream_index=0, subtitle_indices=[])
+            extract.assert_not_called()
+        self.assertEqual(project.video, self.path)
+        self.assertEqual(project.video_track_index, 0)
+        self.assertEqual(len(project.tracks), 1)
+
+    def test_invalid_selection_does_not_change_project(self):
+        project = Project()
+        before = project._snapshot()
+        for selection in ({"video_stream_index": 42}, {"subtitle_indices": [0]}):
+            with self.assertRaises(EditError):
+                project.import_video(self.path, **selection)
+            self.assertEqual(project._snapshot(), before)
+
+    def test_track_context_survives_nested_parser_progress(self):
+        from sup2sup.media import extract_pgs_tracks
+
+        updates = []
+        extract_pgs_tracks(self.path, [1, 2], progress=updates.append)
+        parsing = [u for u in updates if u.stage == "Loading cues"]
+        self.assertEqual({u.track_number for u in parsing}, {1, 2})
+        self.assertTrue(all(u.track_total == 2 and u.track_name for u in parsing))

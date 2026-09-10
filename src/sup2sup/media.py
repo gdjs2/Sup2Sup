@@ -11,7 +11,7 @@ import av
 
 from .edit.geometry import EditError
 from .pgs.parser import MAX_SUP_BYTES, read_sup
-from .progress import report_progress
+from .progress import report_progress, track_progress
 
 
 @dataclass(frozen=True)
@@ -20,16 +20,24 @@ class MediaInfo:
     height: int
     subtitles: tuple[dict, ...]
     skipped_subtitles: int = 0
+    videos: tuple[dict, ...] = ()
 
 
 def probe_video(path, *, progress=None):
     report_progress(progress, "Reading media metadata", 0, 0, unit="")
     with av.open(str(Path(path).resolve())) as container:
-        videos = [
-            s
-            for s in container.streams.video
+        videos = tuple(
+            dict(
+                index=s.index,
+                playback_index=number,
+                width=s.codec_context.width,
+                height=s.codec_context.height,
+                codec=s.codec_context.name,
+                tags=dict(s.metadata),
+            )
+            for number, s in enumerate(container.streams.video)
             if not s.disposition & av.stream.Disposition.attached_pic
-        ]
+        )
         if not videos:
             raise EditError("The file contains no video stream")
         video = videos[0]
@@ -39,10 +47,11 @@ def probe_video(path, *, progress=None):
             if s.codec_context.name == "pgssub"
         )
         return MediaInfo(
-            video.codec_context.width,
-            video.codec_context.height,
+            video["width"],
+            video["height"],
             subtitles,
             len(container.streams.subtitles) - len(subtitles),
+            videos,
         )
 
 
@@ -77,11 +86,15 @@ def extract_pgs_tracks(path, stream_indices, *, progress=None):
             }
             origin = Fraction(container.start_time or 0, av.time_base)
             completed = 0
+            reporters = {
+                index: track_progress(progress, number, len(indices), f"PGS stream {index}")
+                for number, index in enumerate(indices, 1)
+            }
             for packet in container.demux(*(available[index] for index in indices)):
                 if packet.size:
                     completed += _write_pgs_packet(outputs[packet.stream.index], packet, origin)
                 report_progress(
-                    progress,
+                    reporters[packet.stream.index],
                     "Extracting PGS tracks",
                     completed,
                     0,
@@ -91,15 +104,16 @@ def extract_pgs_tracks(path, stream_indices, *, progress=None):
         # The video is closed and every SUP is complete before decoding any track.
         documents = {}
         for number, (index, target) in enumerate(paths.items(), 1):
+            reporter = track_progress(progress, number, len(indices), f"PGS stream {index}")
             report_progress(
-                progress,
+                reporter,
                 "Loading extracted PGS tracks",
                 number - 1,
                 len(indices),
                 f"Stream {index}",
                 unit="tracks",
             )
-            documents[index] = read_sup(target, progress=progress)
+            documents[index] = read_sup(target, progress=reporter)
         report_progress(
             progress, "Loading extracted PGS tracks", len(indices), len(indices), unit="tracks"
         )
