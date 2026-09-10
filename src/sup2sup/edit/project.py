@@ -335,27 +335,35 @@ class Project:
         reports = []
         with tempfile.TemporaryDirectory(prefix=".sup2sup-", dir=directory) as staging:
             for index, (track, target) in enumerate(zip(tracks, outputs, strict=True)):
-                report_progress(
-                    progress,
-                    "Validating subtitle tracks",
-                    index,
-                    len(outputs),
-                    track.name,
-                    unit="tracks",
-                )
+                report_track = track_progress(progress, index + 1, len(outputs), track.name)
                 try:
                     data, report = export_sup(
-                        track.session.document, track.session.crop, track.session.transforms
+                        track.session.document,
+                        track.session.crop,
+                        track.session.transforms,
+                        progress=report_track,
                     )
                 except ValueError as exc:
                     raise EditError(f"{track.name}: {exc}") from exc
+                report_progress(report_track, "Staging subtitle file", 0, len(data), unit="bytes")
                 (Path(staging) / target.name).write_bytes(data)
+                report_progress(
+                    report_track, "Staging subtitle file", len(data), len(data), unit="bytes"
+                )
                 reports.append(dict(track=track.name, output=str(target), **asdict(report)))
             report_progress(progress, "Publishing subtitle tracks", 0, len(outputs), unit="tracks")
-            for target in outputs:
+            for number, target in enumerate(outputs, 1):
                 staged = Path(staging) / target.name
                 if overwrite:
                     os.replace(staged, target)
                 else:
                     os.link(staged, target)
+                report_progress(
+                    progress,
+                    "Publishing subtitle tracks",
+                    number,
+                    len(outputs),
+                    target.name,
+                    unit="tracks",
+                )
         return reports

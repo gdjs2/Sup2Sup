@@ -125,7 +125,7 @@ class MediaTests(unittest.TestCase):
                 self.scan_finished = True
 
         def read_extracted(path, *, progress=None):
-            self.assertEqual(scans, [(1, 2)])
+            self.assertEqual(scans, [()])  # One scan observes all packets, without decoding them.
             self.assertTrue(opened[-1].scan_finished)
             self.assertEqual(opened, closed)
             parsed.append(Path(path))
@@ -251,3 +251,36 @@ class MediaTests(unittest.TestCase):
         parsing = [u for u in updates if u.stage == "Loading cues"]
         self.assertEqual({u.track_number for u in parsing}, {1, 2})
         self.assertTrue(all(u.track_total == 2 and u.track_name for u in parsing))
+
+    def test_scan_progress_is_overall_and_parsing_track_numbers_are_sequential(self):
+        from sup2sup.media import _write_pgs_packet, extract_pgs_tracks
+
+        make_container(self.path, tracks=3, staggered=True)
+        updates, before_first_subtitle = [], []
+
+        def progress(update):
+            updates.append(update)
+            if (
+                update.stage == "Extracting PGS tracks"
+                and update.completed > 0
+                and not write.called
+            ):
+                before_first_subtitle.append(update)
+
+        with patch("sup2sup.media._write_pgs_packet", wraps=_write_pgs_packet) as write:
+            documents = extract_pgs_tracks(self.path, [1, 2, 3], progress=progress)
+        self.assertEqual(len(documents), 3)
+        self.assertTrue(before_first_subtitle, "Video packets must advance the scan before PGS")
+        scanning = [u for u in updates if u.stage == "Extracting PGS tracks"]
+        positions = [u.completed for u in scanning]
+        self.assertEqual(positions, sorted(positions))
+        self.assertEqual(positions[0], 0)
+        self.assertEqual(positions[-1], self.path.stat().st_size)
+        self.assertTrue(all(u.total == self.path.stat().st_size for u in scanning))
+        self.assertTrue(all(not u.track_total and not u.track_number for u in scanning))
+        self.assertTrue(all(value < positions[-1] for value in positions[:-1]))
+        parsing = [u for u in updates if u.track_total]
+        numbers = [u.track_number for u in parsing]
+        self.assertEqual(set(numbers), {1, 2, 3})
+        self.assertEqual(numbers, sorted(numbers))
+        self.assertTrue(all(u.track_total == 3 for u in parsing))

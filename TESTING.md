@@ -22,7 +22,7 @@ uv run --no-sync python -m compileall -q src tests
 
 ## Current validation
 
-**124 tests passed, with no skips**, on Linux with Python 3.14.0, PySide6 6.11.2, and PyAV 17.1.0. GUI tests used Qt's offscreen platform. Compilation and lint of all changed Python files passed. Repository-wide lint retains pre-existing findings elsewhere.
+**133 tests passed, with no skips**, on Linux with Python 3.14.0, PySide6 6.11.2, and PyAV 17.1.0. GUI tests used Qt's offscreen platform. Compilation and lint of all changed Python files passed. Repository-wide lint retains pre-existing findings elsewhere.
 
 ## Prior baseline validation
 
@@ -43,9 +43,11 @@ uv run --no-sync python -m compileall -q src tests
 
 Three FFmpeg integration tests independently decode exported SUP data, compare rendered pixels, and check the original clearing time. The 4K test converts video crop margins into subtitle pixels, fits and exports the cue, then explicitly scales the subtitle canvas onto a `3840 × 1608` frame.
 
-Project GUI tests also check crop and filter persistence across track changes, shared crop undo/redo, batch fitting, save/reopen, and crop detection before subtitle import. Export tests check the combined menu, active-track default selection, cancellation, selected-only validation/output, stable names across subsets, and protection of unselected input files. Import tests exercise the combined menu and selector placement, cancelling the picker, choosing a video and subtitle subset, restoring the selected video stream during real Qt playback, and retaining track counters during nested parser progress.
+Project GUI tests also check crop and filter persistence across track changes, shared crop undo/redo, batch fitting, save/reopen, and crop detection before subtitle import. Export tests check the combined menu, active-track default selection, cancellation, selected-only validation/output, stable names across subsets, and protection of unselected input files. Import tests exercise the combined menu and selector placement, cancelling the picker, choosing a video and subtitle subset, restoring the selected video stream during real Qt playback, and retaining track counters during nested parser progress. Extraction progress tests verify a monotonic container-wide byte position (including video packets before the first subtitle), completion at EOF, and sequential per-track counters only during parsing.
 
 The GUI tests render synthetic video through Qt's real video sink. The audio integration test generates a video with two AAC tracks and checks decoded buffers. Playback-slider tests send real Qt mouse and keyboard events.
+
+Export progress tests check intermediate cue counts, nested read-back verification, checksum accuracy, selected-track numbering, and cleanup if verification is interrupted before publication. Both GUI export paths are exercised with deliberately slow validation: progress must appear before the first track finishes, while the GUI timer continues running. Unchanged exports remain byte-identical and unresolved cue placements still block export.
 
 ## Manual checks and limits
 

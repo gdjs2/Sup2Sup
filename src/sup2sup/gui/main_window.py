@@ -398,6 +398,8 @@ class MainWindow(QMainWindow):
             self.progress_bar.setRange(0, 1000)
             self.progress_bar.setValue(min(1000, update.completed * 1000 // update.total))
             count = f"{update.completed:,} / {update.total:,} {update.unit}"
+            if update.stage == "Extracting PGS tracks" and update.unit == "bytes":
+                count = f"{update.completed * 100 // update.total}% of container scanned"
         elif update.unit == "cues":
             self.progress_bar.setRange(0, 1000)
             self.progress_bar.setValue(1000)
@@ -944,9 +946,10 @@ class MainWindow(QMainWindow):
         )
 
         def export(progress):
-            progress(Progress("Validating and exporting SUP", 0, 0, unit=""))
-            data, report = export_sup(document, crop, transforms)
+            data, report = export_sup(document, crop, transforms, progress=progress)
+            progress(Progress("Writing subtitle file", 0, len(data), unit="bytes"))
             write_bytes(path, data, overwrite=True)
+            progress(Progress("Writing subtitle file", len(data), len(data), unit="bytes"))
             return report
 
         def exported(report):

@@ -716,3 +716,109 @@ class GUISmokeTests(unittest.TestCase):
             self.window._export_tracks()
             export.assert_not_called()
         self.assertIsNone(self.window.task)
+
+    def test_batch_export_validation_updates_before_first_track_finishes(self):
+        self.check_export_progress(batch=True)
+
+    def test_active_export_validation_updates_before_track_finishes(self):
+        self.check_export_progress(batch=False)
+
+    def check_export_progress(self, *, batch):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
+
+        from sup2sup.edit.geometry import inspect_cue
+        from sup2sup.gui.export_tracks import ExportTracksDialog
+
+        self.load(30)
+        self.load(30)
+        self.crop()
+        self.window._fit_all_tracks()
+        self.idle()
+        self.window.show()
+        self.app.processEvents()
+        gui_thread = threading.get_ident()
+
+        output = Path(self.directory.name) / ("batch" if batch else "single.sup")
+        threads, beats, updates, labels = [], [], [], []
+        timer = QTimer()
+        timer.setInterval(5)
+        timer.timeout.connect(lambda: beats.append(True))
+
+        def slow_check(*args, **kwargs):
+            threads.append(threading.get_ident())
+            time.sleep(0.004)
+            return inspect_cue(*args, **kwargs)
+
+        def select(dialog):
+            dialog._check_all(True)
+            dialog.destination.setText(str(output))
+            return QDialog.DialogCode.Accepted
+
+        def progress(update):
+            updates.append(update)
+            if update.stage == "Validating cue placement":
+                labels.append(self.window.progress_label.text())
+
+        timer.start()
+        try:
+            with (
+                patch("sup2sup.pgs.writer.inspect_cue", slow_check),
+                patch.object(ExportTracksDialog, "exec", select),
+                patch.object(QFileDialog, "getSaveFileName", return_value=(str(output), "")),
+                patch.object(QMessageBox, "information"),
+                patch.object(QMessageBox, "exec"),
+            ):
+                if batch:
+                    self.window._export_tracks()
+                else:
+                    self.window._export()
+                self.window.task.progress.connect(progress)
+                self.wait_until(
+                    lambda: any(
+                        u.stage == "Validating cue placement" and 0 < u.completed < u.total
+                        for u in updates
+                    )
+                )
+                self.assertIsNotNone(self.window.task)
+                self.assertTrue(self.window.progress_panel.isVisible())
+                self.assertGreater(self.window.progress_bar.value(), 0)
+                if batch:
+                    self.assertEqual(updates[-1].track_number, 1)
+                    self.assertTrue(any("(1/2) track" in label for label in labels))
+                    self.assertFalse(list(output.glob("*.sup")))
+                else:
+                    self.assertFalse(output.exists())
+                self.idle()
+        finally:
+            timer.stop()
+        self.assertNotIn(gui_thread, threads)
+        self.assertGreater(len(beats), 5)
+        self.assertTrue(any("/ 30 cues" in label for label in labels))
+        self.assertTrue(
+            any(
+                u.stage == "Validating exported placement" and 0 < u.completed < u.total
+                for u in updates
+            )
+        )
+        self.assertIn("Verifying export (loading cues)", {u.stage for u in updates})
+        if batch:
+            self.assertEqual(len(list(output.glob("*.sup"))), 2)
+        else:
+            self.assertTrue(output.is_file())
+
+    def test_extraction_shows_overall_percent_then_parsing_shows_track_counter(self):
+        from sup2sup.progress import Progress, track_progress
+
+        report = track_progress(self.window._task_progress, 2, 3, "PGS stream 2")
+        report(Progress("Loading cues", 20, 100))
+        self.window._task_progress(
+            Progress("Extracting PGS tracks", 50, 100, "3 PGS tracks", unit="bytes")
+        )
+        self.assertIn("50% of container scanned", self.window.progress_label.text())
+        self.assertNotIn("(2/3)", self.window.progress_label.text())
+        self.assertEqual(self.window.progress_bar.value(), 500)
+        report = track_progress(self.window._task_progress, 1, 3, "PGS stream 1")
+        report(Progress("Loading cues", 20, 100))
+        self.assertIn("(1/3) PGS stream 1", self.window.progress_label.text())
+        self.assertNotIn("container scanned", self.window.progress_label.text())

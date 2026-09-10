@@ -70,13 +70,16 @@ def extract_pgs_tracks(path, stream_indices, *, progress=None):
     indices = tuple(dict.fromkeys(stream_indices))
     if not indices:
         return {}
+    source = Path(path).resolve()
+    total = source.stat().st_size
     with tempfile.TemporaryDirectory(prefix="sup2sup-pgs-") as directory:
         paths = {
             index: Path(directory) / f"track-{number}.sup" for number, index in enumerate(indices)
         }
-        report_progress(progress, "Extracting PGS tracks", 0, 0, unit="bytes")
+        detail = f"{len(indices)} PGS tracks"
+        report_progress(progress, "Extracting PGS tracks", 0, total, detail, unit="bytes")
         with ExitStack() as stack:
-            container = stack.enter_context(av.open(str(Path(path).resolve())))
+            container = stack.enter_context(av.open(str(source)))
             available = {s.index: s for s in container.streams.subtitles}
             for index in indices:
                 if index not in available or available[index].codec_context.name != "pgssub":
@@ -86,21 +89,24 @@ def extract_pgs_tracks(path, stream_indices, *, progress=None):
             }
             origin = Fraction(container.start_time or 0, av.time_base)
             completed = 0
-            reporters = {
-                index: track_progress(progress, number, len(indices), f"PGS stream {index}")
-                for number, index in enumerate(indices, 1)
-            }
-            for packet in container.demux(*(available[index] for index in indices)):
-                if packet.size:
-                    completed += _write_pgs_packet(outputs[packet.stream.index], packet, origin)
+            # Observe every stream so scanning advances even in long gaps without PGS packets.
+            # Only selected subtitles are written; video/audio packets are never decoded.
+            for packet in container.demux():
+                if packet.size and packet.stream.index in outputs:
+                    _write_pgs_packet(outputs[packet.stream.index], packet, origin)
+                if packet.size and packet.pos is not None and packet.pos >= 0:
+                    # Some demuxers return positions out of order. Keep the scan monotonic,
+                    # and reserve 100% until EOF (including trailing container metadata).
+                    completed = max(completed, min(total - 1, packet.pos + packet.size))
                 report_progress(
-                    reporters[packet.stream.index],
+                    progress,
                     "Extracting PGS tracks",
                     completed,
-                    0,
-                    f"{len(indices)} tracks",
+                    total,
+                    detail,
                     unit="bytes",
                 )
+        report_progress(progress, "Extracting PGS tracks", total, total, detail, unit="bytes")
         # The video is closed and every SUP is complete before decoding any track.
         documents = {}
         for number, (index, target) in enumerate(paths.items(), 1):
