@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from sup2sup.files import same_path, write_bytes
-from sup2sup.media import extract_pgs, probe_video
+from sup2sup.media import extract_pgs_tracks, probe_video
 from sup2sup.pgs.parser import parse_sup, read_sup
 from sup2sup.pgs.writer import export_sup
 from sup2sup.progress import report_progress
@@ -85,7 +85,7 @@ class Project:
         """Build additions first so failed extraction never partially changes the project."""
         path = Path(path).resolve()
         info = probe_video(path, progress=progress)
-        additions = []
+        streams = []
         for stream in info.subtitles:
             index = stream["index"]
             if self.video == path and any(
@@ -93,11 +93,20 @@ class Project:
                 for t in self.tracks
             ):
                 continue
+            streams.append(stream)
+        documents = (
+            extract_pgs_tracks(path, [s["index"] for s in streams], progress=progress)
+            if streams
+            else {}
+        )
+        additions = []
+        for stream in streams:
+            index = stream["index"]
             tags = stream.get("tags", {})
             name = f"{path.stem}.s{index}.{tags.get('language', 'und')}"
             if tags.get("title"):
                 name += f".{tags['title']}"
-            doc = extract_pgs(path, index, progress=progress)
+            doc = documents[index]
             additions.append(SubtitleTrack(Session(doc, path), name, True, index))
         candidate = self.fork()
         for track in additions:

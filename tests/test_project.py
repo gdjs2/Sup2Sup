@@ -125,8 +125,8 @@ class ProjectTests(unittest.TestCase):
         with (
             patch("sup2sup.edit.project.probe_video", return_value=info),
             patch(
-                "sup2sup.edit.project.extract_pgs",
-                side_effect=[parse_sup(simple()), EditError("broken")],
+                "sup2sup.edit.project.extract_pgs_tracks",
+                side_effect=EditError("broken"),
             ),
         ):
             with self.assertRaises(EditError):
@@ -134,11 +134,14 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.project._snapshot(), before)
         with (
             patch("sup2sup.edit.project.probe_video", return_value=info),
-            patch("sup2sup.edit.project.extract_pgs", return_value=parse_sup(simple())) as extract,
+            patch(
+                "sup2sup.edit.project.extract_pgs_tracks",
+                return_value={1: parse_sup(simple()), 2: parse_sup(simple())},
+            ) as extract,
         ):
             self.project.import_video(video)
             self.project.import_video(video)
-            self.assertEqual(extract.call_count, 2)
+            extract.assert_called_once_with(video, [1, 2], progress=None)
             self.assertEqual(len(self.project.tracks), 3)
 
     def test_mixed_hd_uhd_shared_crop_and_fractional_failure_are_atomic(self):

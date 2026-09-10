@@ -22,7 +22,7 @@ uv run --no-sync python -m compileall -q src tests
 
 ## Current validation
 
-**102 tests passed, with no skips**, on Linux with Python 3.12.12, PySide6 6.11.2, and PyAV 17.1.0. GUI tests used Qt's offscreen platform. Compilation and lint of the changed application modules/new test modules passed. Repository-wide lint retains 50 pre-existing findings (the committed baseline had 91).
+**106 tests passed, with no skips**, on Linux with Python 3.14.0, PySide6 6.11.2, and PyAV 17.1.0. GUI tests used Qt's offscreen platform. Compilation and lint of the changed application modules/new test modules passed. Repository-wide lint retains 50 pre-existing findings (the committed baseline had 91).
 
 ## Prior baseline validation
 
@@ -35,7 +35,7 @@ uv run --no-sync python -m compileall -q src tests
 | SUP parsing and rendering | Packet framing, RLE variants and malformed data, fragmented/reused objects, palette updates, forced/cropped objects, timestamp wrap, cue clearing |
 | Geometry and export | HD/UHD canvases, multi-object fitting, window reuse and clear events, unchanged round trips, preservation of ODS/PDS and timestamps, refusal of unresolved placements |
 | Projects and CLI | Multi-track persistence, embedded PGS, legacy migration, shared crop inheritance, isolated edits, source hashes, batch preflight, collision-safe names, input protection, CLI create/inspect/export |
-| Container import | PyAV-generated multi-PGS video with empty PATH, metadata/language, late cue and clearing timestamps, unchanged encoded payloads, cancellation, and video without subtitles |
+| Container import | PyAV-generated multi-PGS video with empty PATH, metadata/language, late cue and clearing timestamps, unchanged encoded payloads, cancellation, and video without subtitles; exactly one demux scan for multiple tracks, parsing only after extraction completes, temporary-file cleanup, and unchanged project state if a later track fails |
 | Responsiveness | 5,000-cue loading, progress delivery, GUI timers during background checks, cancellation without partial edits, filtered selection, recovery after failed loading |
 | Preview | Palette equivalence with the core renderer, 1080p-to-4K mapping, asymmetric crops, whole-pixel validation, actual scene rendering, video-only fallback and overlay restoration |
 | Seeking | Absolute clicks, dragging, precise handle clicks without movement, endpoints, keyboard navigation, inverted/right-to-left layouts, empty/disabled controls, no feedback from playback updates |
