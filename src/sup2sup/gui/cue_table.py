@@ -57,7 +57,13 @@ class CueTableModel(QAbstractTableModel):
         cue_index = self.rows[index.row()]
         finding = self.findings[cue_index]
         if role == Qt.ItemDataRole.ForegroundRole:
-            return QColor("#cf5142") if finding.problem else None
+            if finding.blocks_export:
+                return QColor("#cf5142")
+            return QColor("#b57916") if finding.problem else None
+        if role == Qt.ItemDataRole.ToolTipRole and finding.fullscreen_cropped:
+            return ("This full-screen bitmap will be cropped to the retained picture. "
+                    "Pixels outside it will be discarded. Review the preview and move the cue "
+                    "if needed. The review flag does not block export.")
         if role != Qt.ItemDataRole.DisplayRole:
             return None
         cue = self.session.document.cues[cue_index]

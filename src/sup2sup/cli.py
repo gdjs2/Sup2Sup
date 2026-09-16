@@ -18,7 +18,7 @@ from .video import centered_crop, subtitle_crop_from_video, suggest_video_canvas
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Lossless PGS subtitle crop and placement editor")
+    parser = argparse.ArgumentParser(description="PGS subtitle crop and placement editor")
     sub = parser.add_subparsers(dest="command", required=True)
     gui = sub.add_parser("gui", help="Open the desktop editor (requires the gui extra)")
     gui.add_argument("input", nargs="?", type=Path)
@@ -132,11 +132,15 @@ def main(argv: list[str] | None = None) -> int:
                 "safe": sum(f.status == "safe" for f in findings),
                 "clipped": sum(f.status == "clipped" for f in findings),
                 "outside": sum(f.status == "outside" for f in findings),
+                "fullscreen_cropped": sum(f.fullscreen_cropped for f in findings),
+                "blocking": sum(f.blocks_export for f in findings),
                 "warnings": session.document.warnings,
                 "findings": [
                     dict(
                         cue=f.cue_index + 1,
                         status=f.status,
+                        fullscreen_cropped=f.fullscreen_cropped,
+                        blocks_export=f.blocks_export,
                         start=format_pts(session.document.cues[f.cue_index].start_pts),
                         overflow=f.overflow,
                         bounds=asdict(f.bounds),
@@ -150,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"{session.document.width}x{session.document.height} -> "
                     f"{region.width}x{region.height}: {len(findings)} cues; "
-                    f"{data['safe']} safe, {data['clipped']} clipped, {data['outside']} outside"
+                    f"{data['safe']} safe, {data['clipped']} clipped, {data['outside']} outside, "
+                    f"{data['fullscreen_cropped']} full-screen crops to review"
                 )
                 for finding in findings:
                     if finding.problem:
@@ -242,6 +247,8 @@ def _project_command(args):
                     name=track.name,
                     cues=len(findings),
                     problems=sum(f.problem for f in findings),
+                    fullscreen_cropped=sum(f.fullscreen_cropped for f in findings),
+                    blocking=sum(f.blocks_export for f in findings),
                     output_size=[region.width, region.height],
                     embedded=track.embedded,
                     stream_index=track.stream_index,

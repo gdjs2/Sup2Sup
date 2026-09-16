@@ -76,3 +76,14 @@ def many_cues(count=1000):
     result.extend(pcs((), pts=pts, state=0, number=count % 65536))
     result.extend(end(pts))
     return bytes(result)
+
+
+def fullscreen(*, width=1920, height=1080, pixels=None, fragmented=False,
+               flags=0, clear=True, version=0):
+    result = (pcs(((1, 0, flags, 0, 0, None),), width=width, height=height)
+              + wds(((0, 0, 0, width, height),)) + pds()
+              + ods(width=width, height=height, pixels=pixels,
+                    fragmented=fragmented, version=version) + end())
+    if clear:
+        result += pcs((), pts=270000, state=0, number=1, width=width, height=height) + end(270000)
+    return result

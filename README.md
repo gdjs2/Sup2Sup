@@ -9,6 +9,7 @@ For example, a `1920 × 1080` subtitle canvas can become `1920 × 804`. A 1080p 
 ## Features
 
 - Detect cues that are partially clipped or entirely outside the crop.
+- Crop full-screen subtitle images automatically and flag them for visual review.
 - Fit problem cues automatically, with an optional safe margin.
 - Drag, nudge, or move multiple cues together, with undo/redo.
 - Preview against video with audio, track/output selection, click-to-seek, and an original-canvas comparison.
@@ -17,7 +18,7 @@ For example, a `1920 × 1080` subtitle canvas can become `1920 × 804`. A 1080p 
 - Import all PGS tracks from a video using PyAV, apply a shared crop, and fit/export all tracks.
 - Export chosen subtitle tracks to a directory, or an individual SUP with a preservation report.
 
-The exporter changes **presentation and window geometry (PCS/WDS)**. It preserves bitmap packets (ODS), palettes (PDS), packet order, timestamps, and forced flags. An unchanged round trip produces identical bytes. Export checks the result and refuses unresolved placements that would lose subtitle pixels.
+Ordinary cues are edited through **presentation and window geometry (PCS/WDS)**, preserving bitmap packets (ODS), palettes (PDS), packet order, timestamps, and forced flags. Full-screen images are cropped and re-encoded when necessary; retained palette indices, palettes, forced flags, and cue timing are preserved. An unchanged round trip produces identical bytes. Export verifies the result and refuses unresolved ordinary cue placements.
 
 ## Quick start
 
@@ -50,11 +51,21 @@ The GUI uses PySide6 and Qt Multimedia for video and audio. Container import use
 
 A new project may be an empty draft; exporting requires at least one subtitle track. External SUP sources are referenced by relative paths and verified using hashes. Extracted PGS data is embedded in the project file, so temporary extraction files and the original container are not needed to reopen those subtitles. Embedded data increases project-file size. Missing video does not prevent subtitle editing; import a replacement to restore playback. Old single-track projects still open and save in the new format.
 
-Audio settings, preview delay, video mapping mode, and playback position remain temporary preview settings. Positive preview delay displays subtitles later without changing exported timestamps. Container extraction normalizes timestamps to the container's playback origin, retaining a late first cue's offset; container formats may not retain the source SUP's original decode timestamps. Subsequent editing/export preserves the imported SUP's timestamps and encoded bitmap/palette data.
+Audio settings, preview delay, video mapping mode, and playback position remain temporary preview settings. Positive preview delay displays subtitles later without changing exported timestamps. Container extraction normalizes timestamps to the container's playback origin, retaining a late first cue's offset; container formats may not retain the source SUP's original decode timestamps. Subsequent editing/export preserves cue timing and palettes; full-screen cropping replaces the affected bitmap packets.
 
-During extraction, one overall percentage shows how far the container scan has progressed. It advances through video and audio packets as well as subtitles, without decoding the video or audio. After extraction, subtitle parsing uses a sequential track counter such as **(1/3)**, then **(2/3)**. The current track remains visible during file reading, bitmap decoding, and cue checks.
+During extraction, one overall percentage shows how far the container scan has progressed. It advances through video and audio packets as well as subtitles, without decoding the video or audio. After extraction, subtitle parsing uses a sequential track counter such as **(1/3)**, then **(2/3)**. The current track remains visible during file reading, bitmap validation, and cue checks.
 
 Loading and batch edits run in the background and can be cancelled without applying partial changes. Both export options show progress within each track during cue validation, output verification, and checksum checks. Batch export includes the selected track number and name, for example `(1/3) English · Validating cue placement: 120 / 900 cues`; the progress bar follows the current stage. Export stages and validates every selected track before publishing any output. Output filenames derive from track names, with numeric suffixes for duplicates that stay consistent when exporting different subsets. Source files from the entire project remain protected from overwrite. A filesystem failure during publication can leave an incomplete batch; completed files remain available. The movie itself is never cropped or rewritten.
+
+### Full-screen subtitle cues
+
+Some tracks encode every cue as an image covering the entire original subtitle canvas, even when most pixels are transparent. Applying a crop marks these cues **Full-screen cropped — review** in amber. They appear under **Problems only** and **Next problem**, but the review flag allows export.
+
+For example, cropping `1920 × 1080` to `1920 × 804` retains the middle 804 rows of each full-screen image. Pixels outside the retained picture are discarded, including any text there. Use the original/cropped preview to check each flagged cue; drag or nudge it to bring text into the picture before exporting. Manual offsets are applied before clipping. **Fit problems** leaves full-screen images in place and keeps their review flags; the safe margin applies to ordinary objects.
+
+Detection requires a bitmap matching the original canvas, placed at `(0, 0)` and displayed in full. Ordinary oversized images still require correction. Cropping works directly on compressed RLE data with progress and cancellation, and supports HD/4K bitmaps, fragmented images, palette updates, and reused images with different cue offsets. The source data and saved project's original images remain intact.
+
+Export reports include `cropped_fullscreen_cues` and `presentation_timestamps_identical`. Full-screen crops set `bitmap_data_identical` to `false`; `timestamps_identical` may also be `false` because replacement bitmap packets can change the packet sequence. Presentation timestamps and clearing times remain unchanged.
 
 ### Playback controls
 
@@ -121,7 +132,7 @@ uv run --no-sync sup2sup crop movie.sup movie.cropped.sup --video-source 3840 21
 
 `--margin` and `--move` always use subtitle pixels. Saved projects already contain converted margins, so `--project` cannot be combined with `--video-source` or nonzero `--crop` margins.
 
-Cue numbers start at **1** in the CLI/UI. Repeated `--move CUE DX DY` options accumulate after automatic fitting. The default `--fit warn` leaves placements unchanged and refuses export when the crop would lose an object. Existing outputs require `--overwrite`; the input SUP is protected.
+Cue numbers start at **1** in the CLI/UI. Repeated `--move CUE DX DY` options accumulate after automatic fitting. The default `--fit warn` leaves offsets unchanged and refuses unresolved ordinary cues; full-screen cues are cropped automatically, even without `--fit`. Inspection JSON distinguishes `fullscreen_cropped` review flags from `blocking` errors. Existing outputs require `--overwrite`; the input SUP is protected.
 
 ### Multi-track projects
 
@@ -146,12 +157,16 @@ These commands produce JSON summaries/reports. `project-export --fit` affects th
 ## Limitations
 
 - Detection uses whole object rectangles, including transparent padding, and honors existing object crops. All objects in a cue move together.
-- A cue or full encoded bitmap larger than the target canvas cannot be fitted without resampling. Reduce the crop or safe margin when appropriate.
+- Full-screen images are automatically clipped, without resampling. Other cues or encoded bitmaps larger than the target canvas still block export; reduce the crop or safe margin when appropriate. A full-screen bitmap reused as a partially cropped composition object is not supported for automatic cropping.
 - Each nonempty presentation display set is a cue. Fade/animation updates can create adjacent entries; select them together when applying a shared movement. OCR, text editing, bitmap resampling, and fade grouping are not implemented.
 - Fragmented images must complete within their display set. Object, palette, and window reuse are supported, including both object/window slots. Malformed, incomplete, changing-canvas, or oversized streams are rejected.
-- Existing window clipping can be previewed and copied unchanged, but blocks geometry export. Unknown segment types are retained for unchanged round trips and also block geometry export. Window rectangles are adjusted to cover moved objects, including clear events.
+- Existing window clipping is respected when cropping full-screen images; it blocks geometry export for ordinary objects. Unknown segment types are retained for unchanged round trips and also block geometry export. Window rectangles are adjusted to cover moved objects, including clear events.
 - Arbitrary cropped canvases are intended for file playback/remuxing. Blu-ray authoring, frame-exact scrubbing, and accurate HDR/Dolby Vision color reproduction are outside the current scope. Codec support and playback performance depend on Qt and the system.
-- Input size and cumulative decoded bitmap allocations are each limited to 512 MiB. A final cue without a clearing presentation remains open-ended.
+- Each imported SUP is limited to 512 MiB of encoded data. Bitmap images stay compressed after validation and are decoded only for preview; a shared cache retains at most four decoded images (up to 33.75 MiB of indexed pixels). Total application memory also includes encoded packets, cue data, video, and rendered images. A final cue without a clearing presentation remains open-ended.
+
+### Large subtitle tracks
+
+Older versions could stop with `Decoded bitmaps exceed the 512 MiB document limit` even when the SUP file was small. This was a cumulative limit on expanded bitmap images, rather than an indication that the subtitle stream was corrupt. Current loading keeps validated images compressed, so tracks exceeding 512 MiB when fully expanded can still be imported, checked, and exported. Restart the application after updating and import the track again. The encoded-file and individual-image size limits still apply.
 
 ## Development and tests
 
@@ -172,7 +187,7 @@ uv run --locked --extra gui --group dev ruff check src tests
 
 | Path | Purpose |
 | --- | --- |
-| `src/sup2sup/pgs/` | SUP parser, RLE/palette renderer, geometry exporter |
+| `src/sup2sup/pgs/` | SUP parser, RLE/palette renderer, geometry and full-screen crop exporter |
 | `src/sup2sup/edit/` | Crop/fit logic, timeline, project state, undo/redo |
 | `src/sup2sup/gui/` | PySide6 desktop interface |
 | `src/sup2sup/cli.py` | Inspection and batch export commands |

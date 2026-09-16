@@ -1,11 +1,12 @@
-"""Rewrite geometry only, preserving segment order, PTS, DTS, ODS and PDS."""
+"""Rewrite geometry, with explicit bitmap cropping for full-screen cues."""
 
 from dataclasses import dataclass, replace
 from hashlib import sha256
 
-from sup2sup.edit.geometry import Crop, EditError, Transform, inspect_cue
+from sup2sup.edit.geometry import Crop, EditError, Transform, inspect_cue, is_fullscreen, retained_rect
 from sup2sup.progress import Progress, ProgressCallback, report_progress
 
+from .fullscreen import rewrite_fullscreen
 from .parser import Document, parse_sup
 from .segments import Rect, Segment, SegmentType, Window, encode_windows, parse_windows
 
@@ -27,6 +28,8 @@ class ExportReport:
     pds_sha256: str
     input_sha256: str
     output_sha256: str
+    cropped_fullscreen_cues: int = 0
+    presentation_timestamps_identical: bool = True
 
 
 def _fingerprints(
@@ -62,6 +65,7 @@ def export_sup(
     region = crop.rectangle(document.width, document.height)
     changed = crop != Crop() or any(t != Transform() for t in transforms.values())
     rewritten = list(document.segments)
+    cropped_fullscreen_cues = 0
     if changed:
         known = {int(kind) for kind in SegmentType}
         if any(segment.kind not in known for segment in document.segments):
@@ -73,7 +77,8 @@ def export_sup(
         report_progress(progress, "Validating cue placement", 0, len(document.cues))
         for number, cue in enumerate(document.cues, 1):
             finding = inspect_cue(cue, crop, transforms.get(cue.index, Transform()))
-            if finding.problem:
+            cropped_fullscreen_cues += finding.fullscreen_cropped
+            if finding.blocks_export:
                 errors.append(f"Cue {cue.index + 1}: {finding.description}")
             report_progress(progress, "Validating cue placement", number, len(document.cues))
         if errors:
@@ -89,12 +94,14 @@ def export_sup(
         for number, cue in enumerate(document.cues, 1):
             t = transforms.get(cue.index, Transform())
             for p in cue.placements:
-                if not p.window.contains(p.rect):
+                if not is_fullscreen(cue, p) and not p.window.contains(p.rect):
                     raise EditError(
                         f"Cue {cue.index + 1}: source window clips an object; "
                         "cannot expand that window without revealing hidden pixels"
                     )
-                rect = p.rect.moved(t.dx - crop.left, t.dy - crop.top)
+                retained = retained_rect(cue, p, region, t)
+                assert retained is not None
+                rect = retained.moved(-crop.left, -crop.top)
                 key = (p.window_segment, p.reference.window_id)
                 required[key] = required[key].union(rect) if key in required else rect
             report_progress(progress, "Preparing subtitle windows", number, len(document.cues))
@@ -126,7 +133,9 @@ def export_sup(
                 cue = document.cues[display.cue_index]
                 t = transforms.get(cue.index, Transform())
                 for p in cue.placements:
-                    rect = p.rect.moved(t.dx - crop.left, t.dy - crop.top)
+                    retained = retained_rect(cue, p, region, t)
+                    assert retained is not None
+                    rect = retained.moved(-crop.left, -crop.top)
                     wid = p.reference.window_id
                     previous_rects[wid] = (
                         previous_rects[wid].union(rect) if wid in previous_rects else rect
@@ -149,12 +158,16 @@ def export_sup(
                 pcs = compositions[index]
                 cue = cue_for_pcs.get(index)
                 t = transforms.get(cue.index, Transform()) if cue else Transform()
-                objects = tuple(
-                    replace(obj, x=obj.x + t.dx - crop.left, y=obj.y + t.dy - crop.top)
-                    for obj in pcs.objects
-                )
+                objects = []
+                for p in cue.placements if cue else ():
+                    obj = p.reference
+                    rect = retained_rect(cue, p, region, t)
+                    assert rect is not None
+                    if is_fullscreen(cue, p):
+                        obj = replace(obj, crop=None, flags=obj.flags & ~0x80)
+                    objects.append(replace(obj, x=rect.x - crop.left, y=rect.y - crop.top))
                 payload = replace(
-                    pcs, width=region.width, height=region.height, objects=objects
+                    pcs, width=region.width, height=region.height, objects=tuple(objects)
                 ).to_bytes()
                 rewritten[index] = replace(segment, payload=payload)
             elif segment.kind == SegmentType.WDS:
@@ -168,14 +181,6 @@ def export_sup(
                     # Unused windows entirely inside removed bars still need legal dimensions.
                     windows.append(Window(window.window_id, rect or Rect(0, 0, 1, 1)))
                 rewritten[index] = replace(segment, payload=encode_windows(tuple(windows)))
-            elif segment.kind == SegmentType.ODS and segment.payload[3] & 0x80:
-                bw = int.from_bytes(segment.payload[7:9], "big")
-                bh = int.from_bytes(segment.payload[9:11], "big")
-                if bw > region.width or bh > region.height:
-                    raise EditError(
-                        f"An encoded bitmap ({bw}x{bh}) exceeds the output canvas. "
-                        "Reduce the crop; preserving ODS prevents resizing this bitmap."
-                    )
             report_progress(
                 progress,
                 "Rewriting subtitle geometry",
@@ -183,6 +188,19 @@ def export_sup(
                 len(document.segments),
                 unit="packets",
             )
+
+        if cropped_fullscreen_cues:
+            rewritten = rewrite_fullscreen(document, rewritten, crop, transforms, progress=progress)
+        for segment in rewritten:
+            if segment.kind == SegmentType.ODS and segment.payload[3] & 0x80:
+                bw = int.from_bytes(segment.payload[7:9], "big")
+                bh = int.from_bytes(segment.payload[9:11], "big")
+                if bw > region.width or bh > region.height:
+                    raise EditError(
+                        f"An encoded bitmap ({bw}x{bh}) exceeds the output canvas. "
+                        "Only full-screen cues can be automatically cropped; reduce the crop "
+                        "for other oversized bitmaps."
+                    )
 
     output_segments = tuple(rewritten)
     report_progress(progress, "Encoding subtitle packets", 0, len(output_segments), unit="packets")
@@ -217,25 +235,32 @@ def export_sup(
     output_ods, output_pds, output_hash = _fingerprints(
         output_segments, "Checking export checksums", progress
     )
+
+    def packets_of(kind, segments):
+        return tuple(s for s in segments if s.kind == kind)
+
+    def changed_packets(kind):
+        return sum(a != b for a, b in zip(packets_of(kind, source),
+                                         packets_of(kind, output_segments), strict=True))
+
     report = ExportReport(
         (document.width, document.height),
         (region.width, region.height),
         len(document.cues),
         sum(t != Transform() for t in transforms.values()),
-        sum(
-            a.kind == SegmentType.PCS and a != b
-            for a, b in zip(source, output_segments, strict=True)
-        ),
-        sum(
-            a.kind == SegmentType.WDS and a != b
-            for a, b in zip(source, output_segments, strict=True)
-        ),
-        all((a.pts, a.dts) == (b.pts, b.dts) for a, b in zip(source, output_segments, strict=True)),
+        changed_packets(SegmentType.PCS),
+        changed_packets(SegmentType.WDS),
+        len(source) == len(output_segments)
+        and all((a.kind, a.pts, a.dts) == (b.kind, b.pts, b.dts)
+                for a, b in zip(source, output_segments, strict=True)),
         source_ods == output_ods,
         source_pds == output_pds,
         output_ods,
         output_pds,
         source_hash,
         output_hash,
+        cropped_fullscreen_cues,
+        tuple((s.pts, s.dts) for s in packets_of(SegmentType.PCS, source))
+        == tuple((s.pts, s.dts) for s in packets_of(SegmentType.PCS, output_segments)),
     )
     return output, report

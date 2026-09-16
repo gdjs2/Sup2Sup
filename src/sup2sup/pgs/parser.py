@@ -1,19 +1,26 @@
 """Retain every packet and build immutable presentation snapshots at END."""
 
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 import struct
 
 from sup2sup.progress import ProgressCallback, report_progress
 
 from .palette import EMPTY_PALETTE, Palette, update_palette
-from .rle import decode_rle
+from .rle import decode_rle, validate_rle
 from .segments import Composition, CompositionObject, PGSError, Rect, Segment, SegmentType
 from .segments import parse_windows
 
 CLOCK = 90_000
 MAX_SUP_BYTES = 512 * 1024 * 1024
-MAX_DECODED_BYTES = 512 * 1024 * 1024
+
+
+@lru_cache(maxsize=4)
+def _decode_bitmap(rle: bytes, width: int, height: int) -> bytes:
+    # Shared across documents/tracks: at most four indexed images are retained.
+    # The per-image limit in decode_rle bounds this cache to 33.75 MiB of pixels.
+    return decode_rle(rle, width, height)
 
 
 @dataclass(frozen=True)
@@ -22,7 +29,13 @@ class Bitmap:
     version: int
     width: int
     height: int
-    indices: bytes
+    rle: bytes
+    segment_indices: tuple[int, ...] = ()
+
+    @property
+    def indices(self) -> bytes:
+        """Expand a validated bitmap only when a renderer requests its pixels."""
+        return _decode_bitmap(self.rle, self.width, self.height)
 
 
 @dataclass(frozen=True)
@@ -118,6 +131,7 @@ class _Fragment:
     height: int
     expected: int
     data: bytearray
+    segment_indices: list[int]
 
 
 def parse_sup(data: bytes, *, progress: ProgressCallback | None = None) -> Document:
@@ -136,7 +150,7 @@ def parse_sup(data: bytes, *, progress: ProgressCallback | None = None) -> Docum
     current_pts = 0
     previous_raw_pts = None
     wrap = 0
-    width = height = decoded_bytes = 0
+    width = height = 0
 
     def loading_progress():
         report_progress(progress, "Loading cues", len(cues), total_cues)
@@ -197,23 +211,26 @@ def parse_sup(data: bytes, *, progress: ProgressCallback | None = None) -> Docum
                         bw, bh = struct.unpack_from(">HH", payload, 7)
                         if expected <= 0 or not (0 < bw <= width and 0 < bh <= height):
                             raise PGSError("Invalid ODS size or dimensions")
-                        fragments[oid] = _Fragment(version, bw, bh, expected, bytearray(payload[11:]))
+                        fragments[oid] = _Fragment(version, bw, bh, expected,
+                                                   bytearray(payload[11:]), [index])
                     else:
                         if oid not in fragments or fragments[oid].version != version:
                             raise PGSError("ODS continuation has no matching first fragment/version")
                         fragments[oid].data.extend(payload[4:])
+                        fragments[oid].segment_indices.append(index)
                     fragment = fragments[oid]
                     if len(fragment.data) > fragment.expected:
                         raise PGSError("ODS exceeds its declared object_data_length")
                     if flags & 0x40:
                         if len(fragment.data) != fragment.expected:
                             raise PGSError("Final ODS fragment is shorter than declared")
-                        decoded_bytes += fragment.width * fragment.height
-                        if decoded_bytes > MAX_DECODED_BYTES:
-                            raise PGSError("Decoded bitmaps exceed the 512 MiB document limit")
-                        pixels = decode_rle(bytes(fragment.data), fragment.width, fragment.height,
-                                            checkpoint=loading_progress if progress else None)
-                        objects[oid] = Bitmap(oid, version, fragment.width, fragment.height, pixels)
+                        encoded = bytes(fragment.data)
+                        # Keep the small RLE representation in cue snapshots. Validate all
+                        # pixels' run structure now, including objects never previewed.
+                        validate_rle(encoded, fragment.width, fragment.height,
+                                     checkpoint=loading_progress if progress else None)
+                        objects[oid] = Bitmap(oid, version, fragment.width, fragment.height, encoded,
+                                              tuple(fragment.segment_indices))
                         del fragments[oid]
                 else:
                     if payload:
@@ -233,8 +250,8 @@ def parse_sup(data: bytes, *, progress: ProgressCallback | None = None) -> Docum
                         window, window_index = windows[ref.window_id]
                         placement = Placement(ref, bitmap, window, window_index)
                         if not window.contains(placement.rect):
-                            warnings.add("Some source windows clip objects; geometry export will "
-                                         "require resolving this unsupported layout.")
+                            warnings.add("Some source windows clip objects; geometry export only "
+                                         "supports this for auto-cropped full-screen cues.")
                         placements.append(placement)
                     cue_index = None
                     if placements:

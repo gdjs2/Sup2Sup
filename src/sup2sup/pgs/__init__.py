@@ -1,1 +1,1 @@
-"""Binary SUP parsing, rendering and lossless geometry rewriting."""
+"""Binary SUP parsing, rendering, geometry rewriting and full-screen bitmap cropping."""

@@ -11,7 +11,7 @@ from sup2sup.pgs.parser import parse_sup
 from sup2sup.pgs.writer import export_sup
 from sup2sup.video import subtitle_crop_from_video
 
-from tests.fixtures import simple
+from tests.fixtures import end, fullscreen, pcs, pds, rle_solid, simple
 
 
 @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is not installed")
@@ -60,3 +60,36 @@ class FFmpegIntegrationTests(unittest.TestCase):
             expected[y * 3840 + 1000:y * 3840 + 1800] = b"\xff" * 800
         self.assertEqual(mask, bytes(expected))
         self.assertLess(max(self.frame(output, 4, size=(3840, 1608))), 30)
+
+    def test_fullscreen_crop_discards_pixels_below_picture_and_preserves_clear(self):
+        pixels = (rle_solid(1920, 900, 0)
+                  + (rle_solid(500, 1, 0)[:-2] + rle_solid(400, 1)[:-2]
+                     + rle_solid(1020, 1, 0)) * 100
+                  + rle_solid(1920, 80, 0))
+        source = fullscreen(pixels=pixels, fragmented=True)
+        output, _ = export_sup(parse_sup(source), Crop(top=138, bottom=138))
+        rendered = self.frame(output, 2)
+        mask = rendered.translate(bytes(255 if i > 128 else 0 for i in range(256)))
+        expected = bytearray(1920 * 804)
+        for y in range(762, 804):
+            expected[y * 1920 + 500:y * 1920 + 900] = b"\xff" * 400
+        self.assertEqual(mask, bytes(expected))
+        self.assertLess(max(self.frame(output, 4)), 30)
+
+    def test_reused_fullscreen_with_individual_move_during_palette_update(self):
+        pixels = (rle_solid(1920, 900, 0)
+                  + (rle_solid(500, 1, 0)[:-2] + rle_solid(400, 1)[:-2]
+                     + rle_solid(1020, 1, 0)) * 100
+                  + rle_solid(1920, 80, 0))
+        source = fullscreen(pixels=pixels, clear=False)
+        source += (pcs(((1, 0, 0, 0, 0, None),), pts=180000, state=0, number=1, update=0x80)
+                   + pds(pts=180000, version=1) + end(180000)
+                   + pcs((), pts=360000, state=0, number=2) + end(360000))
+        output, _ = export_sup(parse_sup(source), Crop(top=138, bottom=138),
+                               {1: Transform(0, -100)})
+        mask = self.frame(output, 3).translate(bytes(255 if i > 128 else 0 for i in range(256)))
+        expected = bytearray(1920 * 804)
+        for y in range(662, 762):
+            expected[y * 1920 + 500:y * 1920 + 900] = b"\xff" * 400
+        self.assertEqual(mask, bytes(expected))
+        self.assertLess(max(self.frame(output, 4)), 30)

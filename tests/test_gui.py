@@ -30,9 +30,15 @@ class GUISmokeTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
 
     def tearDown(self):
+        from PySide6.QtCore import QUrl
+
         if self.window.task:
             self.window._cancel_task()
             self.wait_until(lambda: self.window.task is None)
+        # Stopping playback retains the input handle; unload it before deleting
+        # temporary media, particularly on Windows where open files are locked.
+        self.window.player.stop()
+        self.window.player.setSource(QUrl())
         self.window._confirm_discard = lambda: True
         self.window.close()
         self.window.deleteLater()
@@ -81,6 +87,35 @@ class GUISmokeTests(unittest.TestCase):
         self.idle()
         self.assertFalse(window.session.transforms)
         self.assertEqual(window.progress_bar.value(), 1000)
+
+    def test_fullscreen_review_flag_filter_fit_and_undo(self):
+        from PySide6.QtCore import Qt
+
+        from tests.fixtures import fullscreen
+
+        path = Path(self.directory.name) / "fullscreen.sup"
+        path.write_bytes(fullscreen())
+        self.window.open_path(path)
+        self.idle()
+        self.crop()
+        window = self.window
+        window.problems_only.setChecked(True)
+        model = window.cue_model
+        self.assertEqual(model.rowCount(), 1)
+        cell = model.index(0, 6)
+        self.assertEqual(model.data(cell), "Full-screen cropped — review")
+        self.assertEqual(model.data(cell, Qt.ItemDataRole.ForegroundRole).name(), "#b57916")
+        self.assertIn("does not block export", model.data(cell, Qt.ItemDataRole.ToolTipRole))
+        window.table.selectRow(0)
+        window._fit_problems()
+        self.idle()
+        self.assertFalse(window.session.transforms)
+        self.assertEqual(model.rowCount(), 1)
+        self.assertFalse(model.findings[0].blocks_export)
+        self.assertIsNotNone(window.preview.group)
+        window._undo()
+        self.idle()
+        self.assertEqual(model.rowCount(), 0)
 
     def test_loading_progress_and_model_do_not_build_every_cell(self):
         from PySide6.QtCore import QTimer

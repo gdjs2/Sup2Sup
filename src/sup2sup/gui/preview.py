@@ -120,7 +120,8 @@ class Preview(QGraphicsView):
                     continue
                 bitmap, source = placement.bitmap, placement.source_rect
                 # Qt expands the palette in native code, avoiding a Python loop over every pixel.
-                image = QImage(bitmap.indices, bitmap.width, bitmap.height, bitmap.width,
+                indices = bitmap.indices
+                image = QImage(indices, bitmap.width, bitmap.height, bitmap.width,
                                QImage.Format.Format_Indexed8)
                 image.setColorTable(colors)
                 image = image.copy(source.x + visible.x - placement.rect.x,

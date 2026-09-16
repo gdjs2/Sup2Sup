@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sup2sup"
 version = "0.1.0"
-description = "Lossless PGS subtitle canvas crop and cue placement editor"
+description = "PGS subtitle canvas crop and cue placement editor"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

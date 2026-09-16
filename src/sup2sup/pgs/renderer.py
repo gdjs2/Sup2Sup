@@ -24,9 +24,10 @@ def render_tiles(cue: Cue) -> tuple[Tile, ...]:
         source, bitmap = placement.source_rect, placement.bitmap
         sx = source.x + visible.x - placement.rect.x
         sy = source.y + visible.y - placement.rect.y
+        indices = bitmap.indices
         pixels = bytearray()
         for row in range(sy, sy + visible.height):
             begin = row * bitmap.width + sx
-            pixels.extend(b"".join(colors[i] for i in bitmap.indices[begin:begin + visible.width]))
+            pixels.extend(b"".join(colors[i] for i in indices[begin:begin + visible.width]))
         tiles.append(Tile(visible.x, visible.y, visible.width, visible.height, bytes(pixels)))
     return tuple(tiles)

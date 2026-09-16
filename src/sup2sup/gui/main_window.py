@@ -955,11 +955,17 @@ class MainWindow(QMainWindow):
         def exported(report):
             box = QMessageBox(self)
             box.setWindowTitle("Export complete")
+            preservation = (
+                f"Full-screen cues cropped: {report.cropped_fullscreen_cues}. "
+                "Review their retained text. Palette and presentation timing are unchanged."
+                if report.cropped_fullscreen_cues else
+                "Bitmap, palette, PTS and DTS data are unchanged."
+            )
             box.setText(
                 f"Saved {path}\n\nCanvas: {report.output_size[0]} × {report.output_size[1]}\n"
                 f"Moved cues: {report.moved_cues}\n"
                 f"PCS changed: {report.pcs_changed} · WDS changed: {report.wds_changed}\n"
-                "Bitmap, palette, PTS and DTS data are unchanged."
+                f"{preservation}"
             )
             report_json = json.dumps(asdict(report), indent=2) + "\n"
             box.setDetailedText(report_json)
